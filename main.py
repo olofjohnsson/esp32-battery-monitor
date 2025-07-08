@@ -1,4 +1,4 @@
-SCRIPT_VERSION = "v2.0.0"
+SCRIPT_VERSION = "v2.1.0"
 
 print(f"ESP32 Data Logger Script {SCRIPT_VERSION}\n")
 
@@ -8,6 +8,14 @@ import ujson as json
 import urequests
 from machine import ADC, Pin
 import os
+
+# --- Voltage Divider Settings ---
+R1 = 39000  # Top resistor in ohms (e.g., 39k)
+R2 = 1000   # Bottom resistor in ohms (e.g., 1k)
+DIVIDER_RATIO = (R1 + R2) / R2  # Scale factor for real voltage
+
+# Calibration factor (use 1.0 if no calibration is done)
+CALIBRATION_FACTOR = 0.78
 
 # --- Load Wi-Fi credentials and server URL ---
 try:
@@ -23,14 +31,17 @@ except Exception as e:
 # --- Setup ADC ---
 adc_pin = 2  # Change to your ADC pin number
 adc = ADC(Pin(adc_pin))
+adc.atten(ADC.ATTN_11DB)  # Allow ~3.3V input range
+
 
 # --- Buffer file for unsent data ---
 BUFFER_FILE = "buffer.json"
 
 def read_voltage():
-    raw = adc.read()
-    voltage = (raw / 8190) * 3.3  # Adjust for your ADC resolution
-    return round(voltage, 3)
+    raw = adc.read_u16()  # 16-bit value: 0-65535
+    voltage_at_pin = (raw / 65535) * 3.3  # Voltage at ADC pin
+    real_voltage = voltage_at_pin * DIVIDER_RATIO * CALIBRATION_FACTOR
+    return round(real_voltage, 3), round(voltage_at_pin, 3), raw
 
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
@@ -109,18 +120,18 @@ try:
         flush_buffer()
 
     while True:
-        voltage = read_voltage()
+        real_voltage, pin_voltage, raw = read_voltage()
         timestamp = time.time()  # Or use RTC if configured
-        print(f"🔋 Voltage: {voltage} V @ {timestamp}")
+        print(f"🔋 Source Voltage: {real_voltage} V | Pin: {pin_voltage} V | Raw: {raw} @ {timestamp}")
 
         if wlan and wlan.isconnected():
-            if send_data(voltage, timestamp):
+            if send_data(real_voltage, timestamp):
                 pass  # Data sent successfully
             else:
-                save_to_buffer({"voltage": voltage, "timestamp": timestamp})
+                save_to_buffer({"voltage": real_voltage, "timestamp": timestamp})
         else:
             print("📴 No Wi-Fi, buffering data.")
-            save_to_buffer({"voltage": voltage, "timestamp": timestamp})
+            save_to_buffer({"voltage": real_voltage, "timestamp": timestamp})
 
         time.sleep(10)  # Sample every 10 seconds
 
